@@ -5,6 +5,7 @@ import pandas as pd
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import QIcon
+from scipy.signal import welch
 
 import sys
 import os
@@ -31,6 +32,9 @@ class MainWindow(QWidget):
         layout.addLayout(self.init_naodian_options1())
         layout.addLayout(self.init_naodian_options2())
         layout.addLayout(self.init_space())
+        layout.addLayout(self.init_fre_option())
+        layout.addLayout(self.init_space())
+
         layout.addLayout(self.init_jiashi())
         layout.addLayout(self.init_jiashi_tips())
         layout.addLayout(self.init_jiashi_options())
@@ -104,10 +108,21 @@ class MainWindow(QWidget):
         naodian_options_layout.addWidget(self.naodian_option11)
         naodian_options_layout.addStretch()
         return naodian_options_layout
+
     def init_space(self):
         space_layout = QHBoxLayout()
         space_layout.addItem(QSpacerItem(0,20))
         return space_layout
+
+    def init_fre_option(self):
+        fre_option_layout = QHBoxLayout()
+        self.naodian_fre_option = QCheckBox("是否绘制频域图")
+        self.naodian_fre_option.setEnabled(False)
+        fre_option_layout.addStretch()
+        fre_option_layout.addWidget(self.naodian_fre_option)
+        fre_option_layout.addStretch()
+        return fre_option_layout
+
     def naodian_options_toggle(self, state):
         if state == 2:
             self.naodian_option1.setEnabled(True)
@@ -124,6 +139,7 @@ class MainWindow(QWidget):
             self.naodian_select_file.setEnabled(True)
             self.naodian_file_label.setEnabled(True)
             self.naodian_tips_label.setEnabled(True)
+            self.naodian_fre_option.setEnabled(True)
             self.start_button.setEnabled(True)
         else:
             self.naodian_option1.setEnabled(False)
@@ -140,6 +156,7 @@ class MainWindow(QWidget):
             self.naodian_select_file.setEnabled(False)
             self.naodian_file_label.setEnabled(False)
             self.naodian_tips_label.setEnabled(False)
+            self.naodian_fre_option.setEnabled(False)
             if(not self.jiashi_checkbox.isChecked()):
                 self.start_button.setEnabled(False)
     def naodian_showFileDialog(self):
@@ -281,6 +298,8 @@ class MainWindow(QWidget):
                 self.pics_name.append("attention")
             if (self.naodian_option11.isChecked()):
                 self.pics_name.append("meditation")
+            if (self.naodian_fre_option.isChecked()):
+                self.fre_chosed = 1
         if(self.jiashi_checkbox.isChecked()):
             if(self.jiashi_option1.isChecked()):
                 self.pics_name.append("speed")
@@ -303,7 +322,13 @@ class MainWindow(QWidget):
         if(self.naodian_checkbox.isChecked() and (not self.jiashi_checkbox.isChecked())):
             finaldata = {}
             finaldata.update(self.get_rawdata_from_txt())
-            self.draw_pic(finaldata,0)
+            if(self.fre_chosed ==1):
+                special_keys = ["delta","theta","low_alpha","high_alpha","low_beta","high_beta","low_gamma","middle_gamma"]
+                rawdata_from_large_packets_list = [finaldata[key] for key in special_keys]
+                self.plot_signals_and_features(rawdata_from_large_packets_list)
+            self.logs.append("频域分析图已绘制完毕，保存为eeg_features.png")
+            self.logs.append("开始绘制时域分析图...")
+            self.draw_pic(finaldata, 0)
         elif(self.jiashi_checkbox.isChecked() and (not self.naodian_checkbox.isChecked())):
             finaldata = {}
             finaldata.update(self.get_rawdata_from_csv())
@@ -459,7 +484,67 @@ class MainWindow(QWidget):
         fig.suptitle('Figure', fontsize=80)
         self.logs.append(f"图像已生成并保存为{self.savename}")
         plt.savefig(self.savename)
-        plt.show()
+        #plt.show()
+
+    def extract_time_domain_features(self,signal):
+        features = {
+            "Mean": np.mean(signal),  # 均值
+            "Variance": np.var(signal),  # 方差
+            "Peak-to-Peak": np.ptp(signal),  # 峰值
+            "Standard Deviation": np.std(signal)  # 标准差
+        }
+        return features
+
+
+    def extract_frequency_domain_features(self,signal, fs=512):
+        freqs, psd = welch(signal, fs=fs)
+        return freqs, psd
+
+    def plot_signals_and_features(self,rawdata_from_large_packets):
+        titles = ["Delta", "Theta", "Low Alpha", "High Alpha", "Low Beta", "High Beta", "Low Gamma", "High Gamma"]
+        fs = 512  # 采样率为512Hz
+
+        fig, axs = plt.subplots(8, 2, figsize=(20, 40))  # 8个波形，每个波形2个子图（时域和频域）
+
+        # 创建一个空的DataFrame，用于存储特征
+        df = pd.DataFrame(columns=["Signal", "Feature", "Value"])
+
+        for i in range(8):
+            signal = rawdata_from_large_packets[i]
+            # 时域特征提取
+            time_features = self.extract_time_domain_features(signal)
+            #print(f"{titles[i]} - Time Domain Features: {time_features}")
+
+            # 将时域特征添加到DataFrame
+            time_features_df = pd.DataFrame([{"Signal": titles[i], "Feature": feature_name, "Value": feature_value}
+                                             for feature_name, feature_value in time_features.items()])
+            df = pd.concat([df, time_features_df], ignore_index=True)
+
+            # 时域图
+            axs[i, 0].plot(signal, label=f'{titles[i]} Time Domain')
+            axs[i, 0].set_title(f'{titles[i]} Time Domain')
+            axs[i, 0].legend()
+
+            # 频域特征提取
+            freqs, psd = self.extract_frequency_domain_features(signal, fs)
+
+            # 将频域特征（功率谱密度）添加到DataFrame
+            psd_df = pd.DataFrame([{"Signal": titles[i], "Feature": f'PSD_{freq:.2f}Hz', "Value": psd_value}
+                                   for freq, psd_value in zip(freqs, psd)])
+            df = pd.concat([df, psd_df], ignore_index=True)
+
+            # 频域图
+            axs[i, 1].semilogy(freqs, psd, label=f'{titles[i]} Frequency Domain')
+            axs[i, 1].set_title(f'{titles[i]} Frequency Domain')
+            axs[i, 1].legend()
+
+        # 保存特征到Excel文件
+        df.to_excel("eeg_features.xlsx", index=False)
+
+        fig.suptitle('EEG Signal Time and Frequency Domain Features', fontsize=20)
+        plt.tight_layout()
+        plt.savefig('eeg_features.png')  # 保存图片
+        #plt.show()
 
 
 
